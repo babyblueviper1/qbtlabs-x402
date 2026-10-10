@@ -74,7 +74,7 @@ export function createPaymentFetch(options: PaymentFetchOptions): typeof fetch {
     });
     log('Payment signed, from:', signedPayment.from);
 
-    const paymentHeader = buildPaymentPayload(signedPayment);
+    const paymentHeader = buildPaymentPayload(signedPayment, requirements.accepted);
     log('Payment header length:', paymentHeader.length);
 
     const retryHeaders = new Headers(init?.headers);

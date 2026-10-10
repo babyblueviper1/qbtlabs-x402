@@ -1,6 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
 import { verifyTypedData } from 'viem';
-import { parsePaymentRequired, signPayment } from '../client.js';
+import { buildPaymentPayloadWithAuthorization, parsePaymentRequired, signPayment } from '../client.js';
 
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const PAY_TO = '0x161DbdD73D025E9aEdd4918a67c28e5bf9A87Fb9';
@@ -20,10 +20,12 @@ describe('parsePaymentRequired', () => {
     expect(parsePaymentRequired({
       error: 'Payment Required', price: 0.001,
       accepts: [{ network: 'eip155:84532', asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', payTo: PAY_TO, maxAmountRequired: '1000' }],
-    })).toEqual({ price: 0.001, payTo: PAY_TO, network: 'eip155:84532', chainId: 84532, amountAtomic: '1000' });
+    })).toMatchObject({ price: 0.001, payTo: PAY_TO, network: 'eip155:84532', chainId: 84532, amountAtomic: '1000' });
   });
   it('parses an x402 v2 body: any error text, `amount`, and skips requirements it cannot pay', () => {
-    expect(parsePaymentRequired(v2)).toEqual({ price: 1.080424, payTo: PAY_TO, network: 'eip155:8453', chainId: 8453, amountAtomic: '1080424' });
+    const r = parsePaymentRequired(v2);
+    expect(r).toMatchObject({ price: 1.080424, payTo: PAY_TO, network: 'eip155:8453', chainId: 8453, amountAtomic: '1080424' });
+    expect(r!.accepted).toBe(v2.accepts.find((a: any) => a.amount === '1080424'));
   });
   it('skips a non-USDC asset and a non-exact scheme on an EVM chain', () => {
     expect(parsePaymentRequired({ x402Version: 2, accepts: [
@@ -55,5 +57,14 @@ describe('signPayment amountAtomic', () => {
       signature: s.signature as `0x${string}`,
     });
     expect(ok).toBe(true);
+  });
+  it('echoes the offered requirement as `accepted` (v2 servers check maxTimeoutSeconds, extra) only when it matches', () => {
+    const offered = { scheme: 'exact', network: 'eip155:8453', asset: BASE_USDC, amount: '24897', payTo: PAY_TO,
+      maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } };
+    const auth = { from: PAY_TO, to: PAY_TO, value: '24897', validAfter: '0', validBefore: '9', nonce: '0x' + '11'.repeat(32) };
+    const dec = (h: string) => JSON.parse(Buffer.from(h, 'base64').toString()).accepted;
+    expect(dec(buildPaymentPayloadWithAuthorization({ signature: '0x', authorization: auth, chainId: 8453, accepted: offered }))).toEqual(offered);
+    const other = dec(buildPaymentPayloadWithAuthorization({ signature: '0x', authorization: { ...auth, value: '1' }, chainId: 8453, accepted: offered }));
+    expect(other).toEqual({ scheme: 'exact', network: 'eip155:8453', asset: BASE_USDC, amount: '1', payTo: PAY_TO });
   });
 });

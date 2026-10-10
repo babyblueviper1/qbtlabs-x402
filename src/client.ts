@@ -113,7 +113,25 @@ export async function signPayment(params: SignPaymentParams): Promise<SignedPaym
 /**
  * Build payment payload for x402 header
  */
-export function buildPaymentPayload(signedPayment: SignedPayment): string {
+/**
+ * x402 v2 servers match `accepted` against the requirement they offered (maxTimeoutSeconds, extra, ...), so echo
+ * the server's entry when it is for the same payee and amount that was signed; otherwise build the minimal block.
+ */
+function acceptedBlock(
+  fallback: { scheme: string; network: string; asset: string; amount: string; payTo: string },
+  offered?: PaymentRequirementEntry,
+): Record<string, unknown> {
+  if (
+    offered &&
+    String(offered.payTo).toLowerCase() === fallback.payTo.toLowerCase() &&
+    String(offered.amount ?? offered.maxAmountRequired) === fallback.amount
+  ) {
+    return { ...offered };
+  }
+  return fallback;
+}
+
+export function buildPaymentPayload(signedPayment: SignedPayment, offered?: PaymentRequirementEntry): string {
   const asset = signedPayment.network === 'eip155:84532'
     ? '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
     : '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -134,14 +152,10 @@ export function buildPaymentPayload(signedPayment: SignedPayment): string {
       },
       signature: signedPayment.signature,
     },
-    // Also include accepted for compatibility
-    accepted: {
-      scheme: 'exact',
-      network: signedPayment.network,
-      asset,
-      amount: signedPayment.value,
-      payTo: signedPayment.to,
-    },
+    accepted: acceptedBlock(
+      { scheme: 'exact', network: signedPayment.network, asset, amount: signedPayment.value, payTo: signedPayment.to },
+      offered,
+    ),
   };
   return Buffer.from(JSON.stringify(payload)).toString('base64');
 }
@@ -207,6 +221,8 @@ export function buildPaymentPayloadWithAuthorization(params: {
     nonce: string;
   };
   chainId: number;
+  /** The requirement entry from the server's 402 (`parsePaymentRequired(...).accepted`); echoed when it matches. */
+  accepted?: PaymentRequirementEntry;
 }): string {
   const { signature, authorization, chainId } = params;
   const network = `eip155:${chainId}`;
@@ -221,13 +237,10 @@ export function buildPaymentPayloadWithAuthorization(params: {
       authorization,
       signature,
     },
-    accepted: {
-      scheme: 'exact',
-      network,
-      asset,
-      amount: authorization.value,
-      payTo: authorization.to,
-    },
+    accepted: acceptedBlock(
+      { scheme: 'exact', network, asset, amount: authorization.value, payTo: authorization.to },
+      params.accepted,
+    ),
   };
   return Buffer.from(JSON.stringify(payload)).toString('base64');
 }
@@ -260,6 +273,8 @@ export function parsePaymentRequired(response: {
   chainId: number;
   /** Exact amount in atomic USDC units, as the server stated it. */
   amountAtomic?: string;
+  /** The chosen `accepts` entry, verbatim, to echo back as `accepted` (x402 v2). */
+  accepted: PaymentRequirementEntry;
 } | null {
   if (!response || !Array.isArray(response.accepts) || !response.accepts.length) return null;
   if (response.x402Version !== 2 && response.error !== 'Payment Required') return null;
@@ -279,6 +294,7 @@ export function parsePaymentRequired(response: {
       network: accept.network,
       chainId,
       ...(amountAtomic !== undefined ? { amountAtomic } : {}),
+      accepted: accept,
     };
   }
   return null;
