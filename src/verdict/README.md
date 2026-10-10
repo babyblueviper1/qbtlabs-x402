@@ -24,6 +24,16 @@ sign off on it?* It also leaves a record that a third party can check later with
 **Fail modes**: `failMode: 'closed'` (the default) blocks when the reviewer is unreachable. `'open'` allows and flags
 `failOpen: true`. A proof that fails verification **always** blocks: a bad proof is a finding, not an outage.
 
+**Tuning what blocks.** All operator settings, none set by the agent:
+- `proceedOn`: which verdicts allow a payment. `['approve']` is stricter. Adding `'reject'` makes the gate advisory
+  (shadow mode): every payment gets a signed verdict and nothing is blocked, and a paid reject is still visible after
+  settlement (`executed_despite_reject`).
+- `blockOn: { categories?, severities? }`: block an allowed verdict when the review lists a matching concern, e.g.
+  `{ categories: ['address_poisoning'], severities: ['blocker', 'high'] }`; `decision.blockedBy` names it. The concern
+  list is not covered by the verdict's signature, so `blockOn` only ever makes the gate stricter.
+- `concerns`: your own checklist for the reviewer ("payee must be in the vendor master; flag any change of bank details").
+- `severityThreshold`: the lowest concern severity the review lists (`blocker`, `high`, `medium` or `all`).
+
 ## Evidence: give the reviewer what your systems already know
 
 An independent reviewer that sees only an address and an amount cannot tie the recipient to anyone, so it rejects. That
