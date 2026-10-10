@@ -17,6 +17,8 @@ interface SignPaymentParams {
   amount: number;
   chainId?: number;
   validForSeconds?: number;
+  /** Exact amount in atomic USDC units (6 decimals), e.g. from an x402 v2 `accepts[].amount`. Overrides `amount`. */
+  amountAtomic?: string;
 }
 
 export interface SignedPayment {
@@ -44,6 +46,7 @@ function randomNonce(): `0x${string}` {
  */
 export async function signPayment(params: SignPaymentParams): Promise<SignedPayment> {
   const { privateKey, to, amount, chainId = 84532, validForSeconds = 300 } = params;
+  const exact = params.amountAtomic !== undefined ? BigInt(params.amountAtomic) : undefined;
 
   const account = privateKeyToAccount(privateKey);
   const chain = chainId === 8453 ? base : baseSepolia;
@@ -88,7 +91,7 @@ export async function signPayment(params: SignPaymentParams): Promise<SignedPaym
     message: {
       from: account.address,
       to,
-      value,
+      value: exact ?? value,
       validAfter,
       validBefore,
       nonce,
@@ -98,7 +101,7 @@ export async function signPayment(params: SignPaymentParams): Promise<SignedPaym
   return {
     from: account.address,
     to,
-    value: value.toString(),
+    value: (exact ?? value).toString(),
     validAfter: validAfter.toString(),
     validBefore: validBefore.toString(),
     nonce,
@@ -229,30 +232,54 @@ export function buildPaymentPayloadWithAuthorization(params: {
   return Buffer.from(JSON.stringify(payload)).toString('base64');
 }
 
+/** One entry of an x402 `accepts` list (v1 uses `maxAmountRequired`, v2 uses `amount`). */
+export interface PaymentRequirementEntry {
+  network: string;
+  asset?: string;
+  payTo: string;
+  scheme?: string;
+  amount?: string;
+  maxAmountRequired?: string;
+  [extra: string]: unknown;
+}
+
 /**
- * Parse 402 response and extract payment requirements
+ * Parse a 402 body (or a decoded v2 `PAYMENT-REQUIRED` header) and pick the first requirement this client can pay:
+ * scheme `exact` (or unstated), USDC on Base or Base Sepolia. Accepts x402 v1 (`error: 'Payment Required'`,
+ * `maxAmountRequired`) and v2 (`x402Version: 2`, any error text, `amount`). Returns null when nothing is payable.
  */
 export function parsePaymentRequired(response: {
+  x402Version?: number;
   error?: string;
   price?: number;
-  accepts?: Array<{ network: string; asset: string; payTo: string; maxAmountRequired: string }>;
+  accepts?: PaymentRequirementEntry[];
 }): {
   price: number;
   payTo: string;
   network: string;
   chainId: number;
+  /** Exact amount in atomic USDC units, as the server stated it. */
+  amountAtomic?: string;
 } | null {
-  if (response.error !== 'Payment Required' || !response.accepts?.length) {
-    return null;
+  if (!response || !Array.isArray(response.accepts) || !response.accepts.length) return null;
+  if (response.x402Version !== 2 && response.error !== 'Payment Required') return null;
+
+  for (const accept of response.accepts) {
+    if (accept.scheme !== undefined && accept.scheme !== 'exact') continue;
+    const [ns, ref] = String(accept.network ?? '').split(':');
+    const chainId = parseInt(ref || '84532');
+    if (ns !== 'eip155' || !USDC_CONTRACTS[chainId]) continue;
+    if (accept.asset && accept.asset.toLowerCase() !== USDC_CONTRACTS[chainId].toLowerCase()) continue;
+    const raw = accept.amount ?? accept.maxAmountRequired;
+    const amountAtomic = raw !== undefined && /^[0-9]+$/.test(String(raw)) ? String(raw) : undefined;
+    if (amountAtomic === undefined && response.price === undefined) continue;
+    return {
+      price: response.price ?? Number(amountAtomic) / 1_000_000,
+      payTo: accept.payTo,
+      network: accept.network,
+      chainId,
+      ...(amountAtomic !== undefined ? { amountAtomic } : {}),
+    };
   }
-
-  const accept = response.accepts[0];
-  const chainId = parseInt(accept.network.split(':')[1] || '84532');
-
-  return {
-    price: response.price ?? parseInt(accept.maxAmountRequired) / 1_000_000,
-    payTo: accept.payTo,
-    network: accept.network,
-    chainId,
-  };
+  return null;
 }

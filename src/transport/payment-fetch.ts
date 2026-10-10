@@ -38,6 +38,18 @@ export function createPaymentFetch(options: PaymentFetchOptions): typeof fetch {
       throw new Error('Failed to parse 402 response');
     }
 
+    // x402 v2 servers may put the requirements in a base64 PAYMENT-REQUIRED header instead of the body.
+    if (!Array.isArray(body?.accepts)) {
+      const header = response.headers?.get?.('PAYMENT-REQUIRED');
+      if (header) {
+        try {
+          body = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+        } catch {
+          log('Failed to decode PAYMENT-REQUIRED header');
+        }
+      }
+    }
+
     const requirements = parsePaymentRequired(body);
     log('Parsed requirements:', JSON.stringify(requirements));
     
@@ -57,6 +69,7 @@ export function createPaymentFetch(options: PaymentFetchOptions): typeof fetch {
       privateKey,
       to: requirements.payTo as `0x${string}`,
       amount: requirements.price,
+      amountAtomic: requirements.amountAtomic,
       chainId: chainId ?? requirements.chainId,
     });
     log('Payment signed, from:', signedPayment.from);
@@ -66,6 +79,7 @@ export function createPaymentFetch(options: PaymentFetchOptions): typeof fetch {
 
     const retryHeaders = new Headers(init?.headers);
     retryHeaders.set('X-PAYMENT', paymentHeader);
+    if (body?.x402Version === 2) retryHeaders.set('PAYMENT-SIGNATURE', paymentHeader);
 
     log('Retrying with payment...');
     const retryResponse = await fetch(input, {
